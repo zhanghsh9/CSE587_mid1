@@ -1,3 +1,4 @@
+# Code for CSE587 mid term 1
 import torch
 import torch.nn as nn
 import torch.optim as optim
