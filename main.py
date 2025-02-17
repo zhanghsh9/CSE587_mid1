@@ -9,8 +9,10 @@ from sklearn.model_selection import train_test_split
 from collections import Counter
 import re
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.preprocessing import label_binarize
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_report
+import json
 import random
 
 # ---------------------------
@@ -115,11 +117,11 @@ class LSTMClassifier(nn.Module):
             # Optionally freeze the embeddings:
             # self.embedding.weight.requires_grad = False
 
-        # Multi-layer LSTM. Note: dropout only applies if num_layers > 1.
+        # Multi-layer LSTM. Note: dropout applies if num_layers > 1.
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=num_layers,
                             batch_first=True, dropout=dropout if num_layers > 1 else 0)
 
-        # Activation layer - you can change nn.ReLU() to nn.Tanh() if desired.
+        # Activation layer - change to nn.Tanh() if preferred.
         self.activation = nn.ReLU()
 
         self.fc = nn.Linear(hidden_dim, num_classes)
@@ -128,11 +130,11 @@ class LSTMClassifier(nn.Module):
         # x shape: [batch_size, seq_len]
         embedded = self.embedding(x)  # shape: [batch_size, seq_len, embedding_dim]
         lstm_out, (h_n, c_n) = self.lstm(embedded)
-        # When using multiple layers, h_n shape is [num_layers, batch_size, hidden_dim]
-        # We use the hidden state from the last LSTM layer:
+        # When using multiple layers, h_n has shape [num_layers, batch_size, hidden_dim]
+        # We use the final hidden state from the top layer as the summary representation.
         hidden = h_n[-1]  # shape: [batch_size, hidden_dim]
 
-        # Apply the activation function
+        # Apply activation before classification
         activated = self.activation(hidden)
 
         out = self.fc(activated)  # shape: [batch_size, num_classes]
@@ -145,8 +147,8 @@ class LSTMClassifier(nn.Module):
 def load_pretrained_embeddings(vocab, embedding_dim):
     """
     Load pretrained embeddings from gensim.
-    Here we use 'word2vec-google-news-300' which can be downloaded via gensim's API.
-    (Note: This model is large (~1.6GB) and may take some time to download.)
+    Here we use 'word2vec-google-news-300' via gensim's API.
+    (Note: This model is large (~1.6GB) and may take time to download.)
     """
     print("Loading pretrained word embeddings...")
     try:
@@ -156,7 +158,7 @@ def load_pretrained_embeddings(vocab, embedding_dim):
         return None
 
     vocab_size = len(vocab)
-    # Initialize embeddings randomly from a uniform distribution
+    # Initialize embeddings from a uniform distribution
     embeddings = np.random.uniform(-0.25, 0.25, (vocab_size, embedding_dim))
     embeddings[vocab[PAD_TOKEN]] = np.zeros(embedding_dim)  # zero vector for padding
     found = 0
@@ -169,10 +171,10 @@ def load_pretrained_embeddings(vocab, embedding_dim):
 
 
 # ---------------------------
-# Main Training Loop with Plotting
+# Main Training Loop with Plotting and Confusion Analysis
 # ---------------------------
 def main():
-    # Load the emotion dataset (unsplit) from Hugging Face
+    # Load the emotion dataset from Hugging Face
     dataset = load_dataset("dair-ai/emotion", "unsplit")
     texts = [item["text"] for item in dataset["train"]]
     labels = [item["label"] for item in dataset["train"]]
@@ -182,25 +184,25 @@ def main():
         texts, labels, test_size=0.2, random_state=42
     )
 
-    # Build vocabulary from the training texts
+    # Build vocabulary from training texts
     vocab = build_vocab(train_texts, min_freq=1)
     print("Vocabulary size:", len(vocab))
 
-    # Optionally, load pretrained Word2Vec embeddings
+    # Optionally load pretrained embeddings
     use_pretrained = True
     if use_pretrained:
         pretrained_embeddings = load_pretrained_embeddings(vocab, EMBEDDING_DIM)
     else:
         pretrained_embeddings = None
 
-    # Create PyTorch datasets and dataloaders
+    # Create datasets and dataloaders
     train_dataset = EmotionDataset(train_texts, train_labels, vocab, max_len=MAX_SEQ_LEN)
     test_dataset = EmotionDataset(test_texts, test_labels, vocab, max_len=MAX_SEQ_LEN)
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
 
-    # Initialize the model, loss function, and optimizer
+    # Initialize model, loss function, and optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = LSTMClassifier(len(vocab), EMBEDDING_DIM, HIDDEN_DIM, NUM_CLASSES,
                            num_layers=NUM_LAYERS, dropout=DROPOUT, pretrained_embeddings=pretrained_embeddings)
@@ -229,7 +231,7 @@ def main():
         train_loss = running_loss / len(train_loader)
         train_losses.append(train_loss)
 
-        # Evaluate on the test set for loss and accuracy
+        # Evaluate on the test set
         model.eval()
         test_running_loss = 0.0
         correct = 0
@@ -257,10 +259,10 @@ def main():
     # ---------------------------
     # Plot and Save Training Curve (Loss vs Epoch)
     # ---------------------------
-    epochs = range(1, EPOCHS + 1)
+    epochs_range = range(1, EPOCHS + 1)
     plt.figure()
-    plt.plot(epochs, train_losses, label="Train Loss")
-    plt.plot(epochs, test_losses, label="Test Loss")
+    plt.plot(epochs_range, train_losses, label="Train Loss")
+    plt.plot(epochs_range, test_losses, label="Test Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.title("Training and Test Loss vs Epoch")
@@ -272,9 +274,9 @@ def main():
     # ---------------------------
     # Compute ROC Curve on Test Set
     # ---------------------------
-    # Gather predicted probabilities and true labels for the test set
     all_true = []
     all_scores = []
+    all_preds = []  # For confusion matrix later
     model.eval()
     with torch.no_grad():
         for inputs, targets in test_loader:
@@ -282,6 +284,8 @@ def main():
             outputs = model(inputs)
             probs = nn.functional.softmax(outputs, dim=1)
             all_scores.extend(probs.cpu().numpy())
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
             all_true.extend(targets.cpu().numpy())
 
     all_true = np.array(all_true)
@@ -290,10 +294,10 @@ def main():
     # Binarize the true labels for ROC computation
     all_true_bin = label_binarize(all_true, classes=list(range(NUM_CLASSES)))
 
-    # Compute ROC curve and ROC area for each class
-    fpr = dict()
-    tpr = dict()
-    roc_auc = dict()
+    # Compute ROC curve and AUC for each class
+    fpr = {}
+    tpr = {}
+    roc_auc = {}
     for i in range(NUM_CLASSES):
         fpr[i], tpr[i], _ = roc_curve(all_true_bin[:, i], all_scores[:, i])
         roc_auc[i] = auc(fpr[i], tpr[i])
@@ -302,27 +306,76 @@ def main():
     fpr["micro"], tpr["micro"], _ = roc_curve(all_true_bin.ravel(), all_scores.ravel())
     roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
 
-    # Plot ROC curves
+    # Plot ROC curves with title exactly "ROC curve"
     plt.figure()
     plt.plot(fpr["micro"], tpr["micro"],
-             label=f"micro-average ROC curve (area = {roc_auc['micro']:.2f})",
+             label=f"micro-average (area = {roc_auc['micro']:.2f})",
              color='deeppink', linestyle=':', linewidth=4)
 
     colors = ['aqua', 'darkorange', 'cornflowerblue', 'red', 'green', 'blue']
     for i, color in zip(range(NUM_CLASSES), colors):
         plt.plot(fpr[i], tpr[i], color=color, lw=2,
-                 label=f"ROC curve of class {i} ({emotion_mapping[i]}) (area = {roc_auc[i]:.2f})")
+                 label=f"class {i} ({emotion_mapping[i]}) (area = {roc_auc[i]:.2f})")
 
     plt.plot([0, 1], [0, 1], 'k--', lw=2)
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title("Receiver Operating Characteristic (ROC) Curve")
+    plt.title("ROC curve")  # exactly "ROC curve"
     plt.legend(loc="lower right")
     plt.savefig("roc_curve.png", dpi=300)
     plt.close()
     print("ROC curve saved to roc_curve.png")
+
+    # ---------------------------
+    # Compute and Plot Confusion Matrix
+    # ---------------------------
+    cm = confusion_matrix(all_true, all_preds)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=[emotion_mapping[i] for i in range(NUM_CLASSES)],
+                yticklabels=[emotion_mapping[i] for i in range(NUM_CLASSES)])
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.title("Confusion Matrix")
+    plt.savefig("confusion_matrix.png", dpi=300)
+    plt.close()
+    print("Confusion matrix saved to confusion_matrix.png")
+
+    # ---------------------------
+    # Analyze Confusion and Print Detailed Report
+    # ---------------------------
+    # Generate classification report
+    report = classification_report(all_true, all_preds, target_names=[emotion_mapping[i] for i in range(NUM_CLASSES)],
+                                   output_dict=True)
+
+    # Compute per-class recall (sensitivity) to identify best and worst predictions
+    recalls = {emotion_mapping[i]: report[emotion_mapping[i]]["recall"] for i in range(NUM_CLASSES)}
+    best_emotion = max(recalls, key=recalls.get)
+    worst_emotion = min(recalls, key=recalls.get)
+
+    # Find the most confused pair (highest off-diagonal count)
+    max_confusion = -1
+    confused_pair = (None, None)
+    for i in range(NUM_CLASSES):
+        for j in range(NUM_CLASSES):
+            if i != j and cm[i][j] > max_confusion:
+                max_confusion = cm[i][j]
+                confused_pair = (i, j)
+
+    print("\n--- Detailed Confusion Analysis ---")
+    print("Confusion Matrix (raw counts):")
+    print(cm)
+    print("\nClassification Report:")
+    print(json.dumps(report, indent=4))
+    print(f"\nBest performing emotion: {best_emotion} (Recall = {recalls[best_emotion]:.2f})")
+    print(f"Worst performing emotion: {worst_emotion} (Recall = {recalls[worst_emotion]:.2f})")
+    if confused_pair[0] is not None and confused_pair[1] is not None:
+        print(
+            f"Highest confusion is between true '{emotion_mapping[confused_pair[0]]}' and predicted '{emotion_mapping[confused_pair[1]]}' with {max_confusion} misclassifications.")
+    else:
+        print("No confusion found among classes.")
 
 
 if __name__ == "__main__":
