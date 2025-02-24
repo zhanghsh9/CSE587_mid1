@@ -117,11 +117,11 @@ class LSTMClassifier(nn.Module):
             # Optionally freeze the embeddings:
             # self.embedding.weight.requires_grad = False
 
-        # Multi-layer LSTM. Note: dropout applies if num_layers > 1.
+        # Multi-layer LSTM.
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=num_layers,
                             batch_first=True, dropout=dropout if num_layers > 1 else 0)
 
-        # Activation layer - change to nn.Tanh() if preferred.
+        # Activation layer.
         self.activation = nn.ReLU()
 
         self.fc = nn.Linear(hidden_dim, num_classes)
@@ -130,7 +130,6 @@ class LSTMClassifier(nn.Module):
         # x shape: [batch_size, seq_len]
         embedded = self.embedding(x)  # shape: [batch_size, seq_len, embedding_dim]
         lstm_out, (h_n, c_n) = self.lstm(embedded)
-        # When using multiple layers, h_n has shape [num_layers, batch_size, hidden_dim]
         # We use the final hidden state from the top layer as the summary representation.
         hidden = h_n[-1]  # shape: [batch_size, hidden_dim]
 
@@ -147,8 +146,6 @@ class LSTMClassifier(nn.Module):
 def load_pretrained_embeddings(vocab, embedding_dim):
     """
     Load pretrained embeddings from gensim.
-    Here we use 'word2vec-google-news-300' via gensim's API.
-    (Note: This model is large (~1.6GB) and may take time to download.)
     """
     print("Loading pretrained word embeddings...")
     try:
@@ -179,7 +176,7 @@ def main():
     texts = [item["text"] for item in dataset["train"]]
     labels = [item["label"] for item in dataset["train"]]
 
-    # Split into train and test sets (80/20 split)
+    # Split into train and test sets
     train_texts, test_texts, train_labels, test_labels = train_test_split(
         texts, labels, test_size=0.2, random_state=42
     )
@@ -188,7 +185,7 @@ def main():
     vocab = build_vocab(train_texts, min_freq=1)
     print("Vocabulary size:", len(vocab))
 
-    # Optionally load pretrained embeddings
+    # Load pretrained embeddings
     use_pretrained = True
     if use_pretrained:
         pretrained_embeddings = load_pretrained_embeddings(vocab, EMBEDDING_DIM)
@@ -251,7 +248,7 @@ def main():
         print(
             f"Epoch [{epoch + 1}/{EPOCHS}]: Train Loss = {train_loss:.4f}, Test Loss = {test_loss:.4f}, Test Accuracy = {accuracy * 100:.2f}%")
 
-    # Save the model (entire model object)
+    # Save the model
     model_path = "lstm_emotion_model.pth"
     torch.save(model, model_path)
     print(f"Model saved to {model_path}")
@@ -276,7 +273,7 @@ def main():
     # ---------------------------
     all_true = []
     all_scores = []
-    all_preds = []  # For confusion matrix later
+    all_preds = []
     model.eval()
     with torch.no_grad():
         for inputs, targets in test_loader:
@@ -306,7 +303,7 @@ def main():
     fpr["micro"], tpr["micro"], _ = roc_curve(all_true_bin.ravel(), all_scores.ravel())
     roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
 
-    # Plot ROC curves with title exactly "ROC curve"
+    # Plot ROC curves
     plt.figure()
     plt.plot(fpr["micro"], tpr["micro"],
              label=f"micro-average (area = {roc_auc['micro']:.2f})",

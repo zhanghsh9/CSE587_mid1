@@ -111,7 +111,7 @@ def main():
     test_dataset = EmotionDataset(test_texts, test_labels, vocab, max_len=MAX_SEQ_LEN)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    # Load the saved model (the entire model was saved)
+    # Load the saved model
     model_path = "lstm_emotion_model.pth"
     model = torch.load(model_path, weights_only=False)
 
